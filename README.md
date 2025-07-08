@@ -4,7 +4,7 @@ This project integrates Machine Learning into a SOAR stack built on top of SLES 
 
 ## Structure
 
-- `data/` - Raw logs and processed data from SLES/RHEL systems
+- `data/` - Parsed application logs using API
 - `models/` - Trained ML models (Pickle, ONNX)
 - `notebooks/` - Jupyter notebooks for model training and experiments
 - `scripts/` - ETL and inference scripts

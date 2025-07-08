@@ -1,0 +1,17 @@
+{
+  "name": "threat_classifier",
+  "type": "RandomForestClassifier",
+  "framework": "scikit-learn",
+  "features": [
+    "feature_1",
+    "feature_2",
+    "feature_3",
+    "feature_4",
+    "feature_5"
+  ],
+  "target": "threat_level (binary)",
+  "accuracy": 1.0,
+  "version": "1.0",
+  "author": "Ben",
+  "description": "Classifies whether a security event is a threat or not based on 5 input features."
+}
