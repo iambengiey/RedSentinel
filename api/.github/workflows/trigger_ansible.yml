@@ -1,0 +1,11 @@
+name: Trigger Ansible Playbook (Self-Hosted)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-playbook:
+    runs-on: self-hosted
+    steps:
+      - name: Run playbook
+        run: ansible-playbook ansible/respond_to_threat.yml

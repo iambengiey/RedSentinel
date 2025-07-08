@@ -1,0 +1,33 @@
+name: Pull Dynatrace Logs
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ingest-logs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Pull from Dynatrace
+        run: python scripts/pull_from_dynatrace.py
+        env:
+          API_TOKEN: ${{ secrets.DYNATRACE_TOKEN }}
+
+      - name: Commit pulled logs
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@example.com"
+          git add data/api_inputs/
+          git commit -m "Automated Dynatrace log pull"
+          git push
