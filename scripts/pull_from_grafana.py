@@ -1,24 +1,48 @@
-import requests
-import json
-import os
+#!/usr/bin/env python3
+"""
+Pull firing alerts from Grafana Alerting API
+"""
+import os, json
+from typing import List, Dict, Any
+try:
+    import requests
+except ImportError:
+    requests = None  # type: ignore
 
-# Grafana Loki API Configuration
-LOKI_URL = "http://localhost:3100/loki/api/v1/query_range"
-query = '{job="varlogs"}'
+def fetch_grafana_alerts(base_url: str, token: str) -> List[Dict[str, Any]]:
+    if requests is None:
+        raise RuntimeError("requests library not installed")
 
-params = {
-    "query": query,
-    "limit": 100,
-    "start": "now-1h",
-    "end": "now"
-}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type":  "application/json",
+    }
+    url = f"{base_url.rstrip('/')}/api/alertmanager/grafana/api/v2/alerts"
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    alerts = resp.json()
 
-response = requests.get(LOKI_URL, params=params)
+    findings = []
+    for a in alerts:
+        labels   = a.get("labels", {})
+        severity = labels.get("severity", "LOW").upper()
+        findings.append({
+            "source":   "grafana",
+            "id":       a.get("fingerprint"),
+            "type":     _map_grafana_type(labels),
+            "title":    labels.get("alertname", "Unknown"),
+            "severity": severity,
+            "status":   a.get("status", {}).get("state", "unknown"),
+            "raw":      a,
+        })
+    return findings
 
-if response.status_code == 200:
-    os.makedirs("data/api_inputs", exist_ok=True)
-    with open("data/api_inputs/grafana_logs.json", "w") as f:
-        json.dump(response.json(), f, indent=2)
-    print("✅ Grafana Loki data saved to data/api_inputs/grafana_logs.json")
-else:
-    print(f"❌ Failed to fetch from Grafana Loki: {response.status_code} - {response.text}")
+def _map_grafana_type(labels: dict) -> str:
+    name = labels.get("alertname", "").lower()
+    if "ssh" in name:                     return "SSH_BRUTE_FORCE"
+    if "port" in name:                    return "OPEN_PORT"
+    if "suid" in name:                    return "SUID_BINARY"
+    if "writable" in name or "perm" in name: return "WORLD_WRITABLE_FILE"
+    if "cve" in name or "patch" in name:  return "UNPATCHED_CVE"
+    if "cis" in name or "drift" in name:  return "CIS_DRIFT"
+    return "ANOMALOUS_TRAFFIC"

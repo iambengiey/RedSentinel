@@ -1,0 +1,57 @@
+name: RedSentinel Weekly Hardening
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'   # Every Monday at 02:00 UTC
+  workflow_dispatch:       # Allow manual trigger
+
+jobs:
+  harden:
+    name: SOAR + Zero Trust + CIS Hardening
+    runs-on: self-hosted   # Each host registers as its own GHA runner
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Detect OS and set facts
+        id: os_detect
+        run: bash scripts/detect_os.sh
+
+      - name: Apply CIS Benchmark hardening
+        run: bash scripts/cis_harden.sh
+        env:
+          SENTINEL_SA_KEY: ${{ secrets.SENTINEL_SA_KEY }}
+
+      - name: Apply Zero Trust controls
+        run: bash scripts/zero_trust.sh
+        env:
+          SENTINEL_SA_KEY: ${{ secrets.SENTINEL_SA_KEY }}
+
+      - name: Run SOAR threat assessment
+        run: python scripts/soar_assess.py
+        env:
+          DYNATRACE_TOKEN: ${{ secrets.DYNATRACE_TOKEN }}
+          DYNATRACE_URL:   ${{ secrets.DYNATRACE_URL }}
+          GRAFANA_TOKEN:   ${{ secrets.GRAFANA_TOKEN }}
+          GRAFANA_URL:     ${{ secrets.GRAFANA_URL }}
+
+      - name: Auto-remediate on HIGH/CRITICAL findings
+        run: python scripts/soar_remediate.py
+        env:
+          SENTINEL_SA_KEY: ${{ secrets.SENTINEL_SA_KEY }}
+
+      - name: Publish compliance report
+        run: python scripts/publish_report.py
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
