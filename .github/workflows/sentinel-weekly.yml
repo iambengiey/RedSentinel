@@ -1,14 +1,40 @@
-name: RedSentinel Weekly Hardening
+name: RedSentinel – SOAR Hardening
 
 on:
+  # ── Scheduled: every Monday 02:00 UTC ──────────────────────────────────────
   schedule:
-    - cron: '0 2 * * 1'   # Every Monday at 02:00 UTC
-  workflow_dispatch:       # Allow manual trigger
+    - cron: '0 2 * * 1'
+
+  # ── Event-driven: webhook from Dynatrace / Grafana / Wazuh ─────────────────
+  # POST to: https://api.github.com/repos/iambengiey/RedSentinel/actions/workflows/sentinel-weekly.yml/dispatches
+  # Body: { "ref": "main", "inputs": { "finding_type": "SSH_BRUTE_FORCE", "src_ip": "1.2.3.4", "severity": "CRITICAL" } }
+  workflow_dispatch:
+    inputs:
+      finding_type:
+        description: 'Finding type (e.g. SSH_BRUTE_FORCE, OPEN_PORT, UNPATCHED_CVE)'
+        required: false
+        default: ''
+      src_ip:
+        description: 'Source IP to act on (if applicable)'
+        required: false
+        default: ''
+      severity:
+        description: 'Override severity (CRITICAL|HIGH|MEDIUM|LOW)'
+        required: false
+        default: ''
+      skip_hardening:
+        description: 'Set to true to run assessment+remediation only (skip CIS/ZT)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: sentinel-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   harden:
-    name: SOAR + Zero Trust + CIS Hardening
-    runs-on: self-hosted   # Each host registers as its own GHA runner
+    name: SOAR + Zero Trust + CIS [${{ runner.name }}]
+    runs-on: self-hosted
     timeout-minutes: 60
 
     steps:
@@ -21,37 +47,90 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt --quiet
 
       - name: Detect OS and set facts
         id: os_detect
         run: bash scripts/detect_os.sh
 
+      # ── CIS + Zero Trust (skip if event-driven assess-only run) ────────────
       - name: Apply CIS Benchmark hardening
+        if: ${{ github.event.inputs.skip_hardening != 'true' }}
         run: bash scripts/cis_harden.sh
         env:
           SENTINEL_SA_KEY: ${{ secrets.SENTINEL_SA_KEY }}
 
       - name: Apply Zero Trust controls
+        if: ${{ github.event.inputs.skip_hardening != 'true' }}
         run: bash scripts/zero_trust.sh
         env:
           SENTINEL_SA_KEY: ${{ secrets.SENTINEL_SA_KEY }}
 
+      # ── SOAR: assess ───────────────────────────────────────────────────────
       - name: Run SOAR threat assessment
+        id: assess
         run: python scripts/soar_assess.py
+        continue-on-error: true   # exit 2 = HIGH/CRITICAL found; don't abort
         env:
-          DYNATRACE_TOKEN: ${{ secrets.DYNATRACE_TOKEN }}
-          DYNATRACE_URL:   ${{ secrets.DYNATRACE_URL }}
-          GRAFANA_TOKEN:   ${{ secrets.GRAFANA_TOKEN }}
-          GRAFANA_URL:     ${{ secrets.GRAFANA_URL }}
+          DYNATRACE_TOKEN:  ${{ secrets.DYNATRACE_TOKEN }}
+          DYNATRACE_URL:    ${{ secrets.DYNATRACE_URL }}
+          GRAFANA_TOKEN:    ${{ secrets.GRAFANA_TOKEN }}
+          GRAFANA_URL:      ${{ secrets.GRAFANA_URL }}
+          WAZUH_URL:        ${{ secrets.WAZUH_URL }}
+          WAZUH_USER:       ${{ secrets.WAZUH_USER }}
+          WAZUH_PASS:       ${{ secrets.WAZUH_PASS }}
+          # Injected from webhook payload (event-driven)
+          EVENT_FINDING_TYPE: ${{ github.event.inputs.finding_type }}
+          EVENT_SRC_IP:       ${{ github.event.inputs.src_ip }}
+          EVENT_SEVERITY:     ${{ github.event.inputs.severity }}
 
-      - name: Auto-remediate on HIGH/CRITICAL findings
+      # ── SOAR: immediate ban for event-driven CRITICAL ──────────────────────
+      - name: Immediate IP ban (event-driven CRITICAL only)
+        if: |
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.severity == 'CRITICAL' &&
+          github.event.inputs.src_ip != ''
+        run: python scripts/soar_immediate.py
+        env:
+          EVENT_SRC_IP:       ${{ github.event.inputs.src_ip }}
+          EVENT_FINDING_TYPE: ${{ github.event.inputs.finding_type }}
+
+      # ── SOAR: remediate ────────────────────────────────────────────────────
+      - name: Auto-remediate HIGH/CRITICAL findings
         run: python scripts/soar_remediate.py
         env:
           SENTINEL_SA_KEY: ${{ secrets.SENTINEL_SA_KEY }}
 
+      # ── Escalation: PagerDuty + Jira ───────────────────────────────────────
+      - name: Escalate unresolved findings
+        run: python scripts/escalate.py
+        env:
+          PAGERDUTY_KEY:    ${{ secrets.PAGERDUTY_KEY }}
+          JIRA_URL:         ${{ secrets.JIRA_URL }}
+          JIRA_USER:        ${{ secrets.JIRA_USER }}
+          JIRA_TOKEN:       ${{ secrets.JIRA_TOKEN }}
+          JIRA_PROJECT:     ${{ secrets.JIRA_PROJECT }}
+
+      # ── Compliance report → GitHub Issue ───────────────────────────────────
       - name: Publish compliance report
+        if: always()
         run: python scripts/publish_report.py
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN:           ${{ secrets.GH_TOKEN }}
+          GITHUB_REPOSITORY:  ${{ github.repository }}
+          TRIGGER:            ${{ github.event_name }}
+
+  # ── Runner health monitor: alerts when a host goes offline ──────────────────
+  runner-health:
+    name: Runner Health Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check all runners are online
+        run: python scripts/runner_health.py
+        env:
+          GH_TOKEN:          ${{ secrets.GH_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          PAGERDUTY_KEY:     ${{ secrets.PAGERDUTY_KEY }}
